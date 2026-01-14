@@ -1,0 +1,267 @@
+let
+    Source = PowerPlatform.Dataflows(null),
+    Workspaces = Source{[Id="Workspaces"]}[Data],
+
+    // Redacted identifiers
+    Workspace = Workspaces{[workspaceId="<<REDACTED_WORKSPACE_ID>>"]}[Data],
+    Dataflow  = Workspace{[dataflowId="<<REDACTED_DATAFLOW_ID>>"]}[Data],
+
+    // Redacted entity name
+    OpportunitiesRaw = Dataflow{[entity="<<REDACTED_OPPORTUNITIES_ENTITY>>", version=""]}[Data],
+
+    // Generic rename
+    #"Renamed Columns" =
+        Table.RenameColumns(
+            OpportunitiesRaw,
+            {{"Created On UTC", "Created On"}, {"Preferred Start Date", "Expected Start Date"}}
+        ),
+
+    // Redacted closure reasons (keeps “exclude specific reasons” behavior)
+    ExcludedClosureReasons = {"<<REDACTED_REASON_1>>", "<<REDACTED_REASON_2>>", "<<REDACTED_REASON_3>>"},
+    #"Filtered Rows" =
+        Table.SelectRows(#"Renamed Columns", each not List.Contains(ExcludedClosureReasons, [Closure Reason])),
+
+    // Status normalization (safe)
+    #"Status Normalized" =
+        Table.TransformColumns(
+            #"Filtered Rows",
+            {{"Status", each if List.Contains({"Lost","Won","Duplicate"}, _) then "Inactive" else _, type text}}
+        ),
+
+    // Timezone conversion (safe)
+    #"Added Local Time" =
+        Table.AddColumn(
+            #"Status Normalized",
+            "Created On (Local)",
+            each [Created On] + #duration(0, 8, 0, 0),
+            type datetime
+        ),
+
+    // Earliest visit date (safe)
+    #"Added Earliest Visit Date" =
+        Table.AddColumn(
+            #"Added Local Time",
+            "Earliest Visit Date",
+            each List.Min({
+                [Trial 1 Date], [Trial 2 Date], [Trial 3 Date],
+                [Tour 1 Date],  [Tour 2 Date],  [Tour 3 Date],
+                [Event 1 Date], [Event 2 Date], [Event 3 Date]
+            }),
+            type nullable datetime
+        ),
+
+    // Completed visits per record (safe)
+    #"Added Completed Visits" =
+        Table.AddColumn(
+            #"Added Earliest Visit Date",
+            "Completed Visits Per Record",
+            each
+                  (if [Trial 1 Completed] = "Yes" and [Trial 1 Date] <> null then 1 else 0)
+                + (if [Trial 2 Completed] = "Yes" and [Trial 2 Date] <> null then 1 else 0)
+                + (if [Trial 3 Completed] = "Yes" and [Trial 3 Date] <> null then 1 else 0)
+                + (if [Tour 1 Completed]  = "Yes" and [Tour 1 Date]  <> null then 1 else 0)
+                + (if [Tour 2 Completed]  = "Yes" and [Tour 2 Date]  <> null then 1 else 0)
+                + (if [Tour 3 Completed]  = "Yes" and [Tour 3 Date]  <> null then 1 else 0)
+                + (if [Event 1 Status]    = "Yes" and [Event 1 Date] <> null then 1 else 0)
+                + (if [Event 2 Status]    = "Yes" and [Event 2 Date] <> null then 1 else 0)
+                + (if [Event 3 Status]    = "Yes" and [Event 3 Date] <> null then 1 else 0),
+            Int64.Type
+        ),
+
+    // Visit count excluding “bad” statuses (safe)
+    #"Added Visit Count" =
+        Table.AddColumn(
+            #"Added Completed Visits",
+            "Visit Count",
+            each
+                let
+                    Bad = { "no-show", "no show", "cancelled", "canceled" },
+
+                    Normalize = (value as any) as text =>
+                        let
+                            asText =
+                                if Value.Is(value, type logical) then (if value then "yes" else "no")
+                                else if value = null then ""
+                                else Text.From(value),
+                            cleaned =
+                                Text.Lower(
+                                    Text.Trim(
+                                        Text.Replace(asText, Character.FromNumber(160), " ")
+                                    )
+                                )
+                        in cleaned,
+
+                    T1 = Normalize([Trial 1 Completed]),
+                    T2 = Normalize([Trial 2 Completed]),
+                    T3 = Normalize([Trial 3 Completed]),
+                    U1 = Normalize([Tour 1 Completed]),
+                    U2 = Normalize([Tour 2 Completed]),
+                    U3 = Normalize([Tour 3 Completed]),
+                    E1 = Normalize([Event 1 Status]),
+                    E2 = Normalize([Event 2 Status]),
+                    E3 = Normalize([Event 3 Status]),
+
+                    CountVisits =
+                          (if [Trial 1 Date] <> null and T1 <> "" and not List.Contains(Bad, T1) then 1 else 0)
+                        + (if [Trial 2 Date] <> null and T2 <> "" and not List.Contains(Bad, T2) then 1 else 0)
+                        + (if [Trial 3 Date] <> null and T3 <> "" and not List.Contains(Bad, T3) then 1 else 0)
+                        + (if [Tour 1 Date]  <> null and U1 <> "" and not List.Contains(Bad, U1) then 1 else 0)
+                        + (if [Tour 2 Date]  <> null and U2 <> "" and not List.Contains(Bad, U2) then 1 else 0)
+                        + (if [Tour 3 Date]  <> null and U3 <> "" and not List.Contains(Bad, U3) then 1 else 0)
+                        + (if [Event 1 Date] <> null and E1 <> "" and not List.Contains(Bad, E1) then 1 else 0)
+                        + (if [Event 2 Date] <> null and E2 <> "" and not List.Contains(Bad, E2) then 1 else 0)
+                        + (if [Event 3 Date] <> null and E3 <> "" and not List.Contains(Bad, E3) then 1 else 0)
+                in
+                    CountVisits,
+            Int64.Type
+        ),
+
+    // Optional: remove sensitive business-process fields for portfolio sharing
+    #"Removed Sensitive Columns" =
+        Table.RemoveColumns(
+            #"Added Visit Count",
+            {
+                "Closure Description",
+                "Child's Nationality",
+                "Enrollment Paperwork Form Sent Date",
+                "Enrollment Paperwork Form Received Date"
+            }
+        )
+
+in
+    #"Removed Sensitive Columns"
+
+
+
+let
+    Source = PowerPlatform.Dataflows(null),
+    Workspaces = Source{[Id="Workspaces"]}[Data],
+
+    // Redacted identifiers
+    Workspace = Workspaces{[workspaceId="<<REDACTED_WORKSPACE_ID>>"]}[Data],
+    Dataflow  = Workspace{[dataflowId="<<REDACTED_DATAFLOW_ID>>"]}[Data],
+
+    // Redacted entity name
+    OpportunitiesRaw = Dataflow{[entity="<<REDACTED_OPPORTUNITIES_ENTITY>>", version=""]}[Data],
+
+    // Generic rename
+    #"Renamed Columns" =
+        Table.RenameColumns(
+            OpportunitiesRaw,
+            {{"Created On UTC", "Created On"}, {"Preferred Start Date", "Expected Start Date"}}
+        ),
+
+    // Redacted closure reasons (keeps “exclude specific reasons” behavior)
+    ExcludedClosureReasons = {"<<REDACTED_REASON_1>>", "<<REDACTED_REASON_2>>", "<<REDACTED_REASON_3>>"},
+    #"Filtered Rows" =
+        Table.SelectRows(#"Renamed Columns", each not List.Contains(ExcludedClosureReasons, [Closure Reason])),
+
+    // Status normalization (safe)
+    #"Status Normalized" =
+        Table.TransformColumns(
+            #"Filtered Rows",
+            {{"Status", each if List.Contains({"Lost","Won","Duplicate"}, _) then "Inactive" else _, type text}}
+        ),
+
+    // Timezone conversion (safe)
+    #"Added Local Time" =
+        Table.AddColumn(
+            #"Status Normalized",
+            "Created On (Local)",
+            each [Created On] + #duration(0, 8, 0, 0),
+            type datetime
+        ),
+
+    // Earliest visit date (safe)
+    #"Added Earliest Visit Date" =
+        Table.AddColumn(
+            #"Added Local Time",
+            "Earliest Visit Date",
+            each List.Min({
+                [Trial 1 Date], [Trial 2 Date], [Trial 3 Date],
+                [Tour 1 Date],  [Tour 2 Date],  [Tour 3 Date],
+                [Event 1 Date], [Event 2 Date], [Event 3 Date]
+            }),
+            type nullable datetime
+        ),
+
+    // Completed visits per record (safe)
+    #"Added Completed Visits" =
+        Table.AddColumn(
+            #"Added Earliest Visit Date",
+            "Completed Visits Per Record",
+            each
+                  (if [Trial 1 Completed] = "Yes" and [Trial 1 Date] <> null then 1 else 0)
+                + (if [Trial 2 Completed] = "Yes" and [Trial 2 Date] <> null then 1 else 0)
+                + (if [Trial 3 Completed] = "Yes" and [Trial 3 Date] <> null then 1 else 0)
+                + (if [Tour 1 Completed]  = "Yes" and [Tour 1 Date]  <> null then 1 else 0)
+                + (if [Tour 2 Completed]  = "Yes" and [Tour 2 Date]  <> null then 1 else 0)
+                + (if [Tour 3 Completed]  = "Yes" and [Tour 3 Date]  <> null then 1 else 0)
+                + (if [Event 1 Status]    = "Yes" and [Event 1 Date] <> null then 1 else 0)
+                + (if [Event 2 Status]    = "Yes" and [Event 2 Date] <> null then 1 else 0)
+                + (if [Event 3 Status]    = "Yes" and [Event 3 Date] <> null then 1 else 0),
+            Int64.Type
+        ),
+
+    // Visit count excluding “bad” statuses (safe)
+    #"Added Visit Count" =
+        Table.AddColumn(
+            #"Added Completed Visits",
+            "Visit Count",
+            each
+                let
+                    Bad = { "no-show", "no show", "cancelled", "canceled" },
+
+                    Normalize = (value as any) as text =>
+                        let
+                            asText =
+                                if Value.Is(value, type logical) then (if value then "yes" else "no")
+                                else if value = null then ""
+                                else Text.From(value),
+                            cleaned =
+                                Text.Lower(
+                                    Text.Trim(
+                                        Text.Replace(asText, Character.FromNumber(160), " ")
+                                    )
+                                )
+                        in cleaned,
+
+                    T1 = Normalize([Trial 1 Completed]),
+                    T2 = Normalize([Trial 2 Completed]),
+                    T3 = Normalize([Trial 3 Completed]),
+                    U1 = Normalize([Tour 1 Completed]),
+                    U2 = Normalize([Tour 2 Completed]),
+                    U3 = Normalize([Tour 3 Completed]),
+                    E1 = Normalize([Event 1 Status]),
+                    E2 = Normalize([Event 2 Status]),
+                    E3 = Normalize([Event 3 Status]),
+
+                    CountVisits =
+                          (if [Trial 1 Date] <> null and T1 <> "" and not List.Contains(Bad, T1) then 1 else 0)
+                        + (if [Trial 2 Date] <> null and T2 <> "" and not List.Contains(Bad, T2) then 1 else 0)
+                        + (if [Trial 3 Date] <> null and T3 <> "" and not List.Contains(Bad, T3) then 1 else 0)
+                        + (if [Tour 1 Date]  <> null and U1 <> "" and not List.Contains(Bad, U1) then 1 else 0)
+                        + (if [Tour 2 Date]  <> null and U2 <> "" and not List.Contains(Bad, U2) then 1 else 0)
+                        + (if [Tour 3 Date]  <> null and U3 <> "" and not List.Contains(Bad, U3) then 1 else 0)
+                        + (if [Event 1 Date] <> null and E1 <> "" and not List.Contains(Bad, E1) then 1 else 0)
+                        + (if [Event 2 Date] <> null and E2 <> "" and not List.Contains(Bad, E2) then 1 else 0)
+                        + (if [Event 3 Date] <> null and E3 <> "" and not List.Contains(Bad, E3) then 1 else 0)
+                in
+                    CountVisits,
+            Int64.Type
+        ),
+
+    // Optional: remove sensitive business-process fields for portfolio sharing
+    #"Removed Sensitive Columns" =
+        Table.RemoveColumns(
+            #"Added Visit Count",
+            {
+                "Closure Description",
+                "Child's Nationality",
+                "Enrollment Paperwork Form Sent Date",
+                "Enrollment Paperwork Form Received Date"
+            }
+        )
+
+in
+    #"Removed Sensitive Columns"
